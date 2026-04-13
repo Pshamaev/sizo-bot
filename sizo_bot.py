@@ -17,7 +17,7 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 db = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Conversation states
-PICK_SIZO, PICK_ACCESS, PICK_FORMAT, PICK_DRESS, PICK_QUEUE, PICK_NOTE = range(6)
+PICK_SIZO, PICK_ACCESS, PICK_QUEUE, PICK_NOTE = range(4)
 
 SIZOS = [
     ("СИЗО-1 (Матросская тишина)", "1"),
@@ -27,14 +27,6 @@ SIZOS = [
     ("СИЗО-6 (Печатники)", "6"),
     ("СИЗО-7 (Капотня)", "7"),
     ("Другое", "other"),
-]
-
-DRESS_OPTIONS = [
-    ("Маска", "mask"),
-    ("Костюм", "suit"),
-    ("Халат", "gown"),
-    ("Перчатки", "gloves"),
-    ("Бахилы", "covers"),
 ]
 
 
@@ -50,22 +42,6 @@ def access_keyboard():
         [InlineKeyboardButton("Пустили", callback_data="access_yes")],
         [InlineKeyboardButton("Не пустили", callback_data="access_no")],
     ])
-
-
-def format_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Кабинет", callback_data="fmt_cabinet")],
-        [InlineKeyboardButton("Через стекло", callback_data="fmt_glass")],
-    ])
-
-
-def dress_keyboard(selected: list):
-    rows = []
-    for name, code in DRESS_OPTIONS:
-        tick = "✓ " if code in selected else ""
-        rows.append([InlineKeyboardButton(f"{tick}{name}", callback_data=f"dress_{code}")])
-    rows.append([InlineKeyboardButton("Готово →", callback_data="dress_done")])
-    return InlineKeyboardMarkup(rows)
 
 
 def queue_keyboard():
@@ -114,43 +90,11 @@ async def pick_access(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     val = "yes" if q.data == "access_yes" else "no"
     ctx.user_data["access_type"] = val
     if val == "no":
-        await save_report(update, ctx, partial=True)
+        await save_report(update, ctx)
         await q.edit_message_text("Репорт сохранён. Жаль что не пустили.")
         return ConversationHandler.END
-    await q.edit_message_text(f"{ctx.user_data['sizo_label']}\n\nКак встречались?", reply_markup=format_keyboard())
-    return PICK_FORMAT
-
-
-async def pick_format(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    ctx.user_data["meeting_format"] = q.data.replace("fmt_", "")
-    ctx.user_data["dress"] = []
-    await q.edit_message_text(
-        f"{ctx.user_data['sizo_label']}\n\nЧто требовали из одежды? (можно несколько)\n→ Нажми Готово когда выбрал",
-        reply_markup=dress_keyboard([])
-    )
-    return PICK_DRESS
-
-
-async def pick_dress(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    if q.data == "dress_done":
-        await q.edit_message_text(
-            f"{ctx.user_data['sizo_label']}\n\nКакая очередь?",
-            reply_markup=queue_keyboard()
-        )
-        return PICK_QUEUE
-    code = q.data.replace("dress_", "")
-    selected = ctx.user_data.get("dress", [])
-    if code in selected:
-        selected.remove(code)
-    else:
-        selected.append(code)
-    ctx.user_data["dress"] = selected
-    await q.edit_message_reply_markup(reply_markup=dress_keyboard(selected))
-    return PICK_DRESS
+    await q.edit_message_text(f"{ctx.user_data['sizo_label']}\n\nКакая очередь?", reply_markup=queue_keyboard())
+    return PICK_QUEUE
 
 
 async def pick_queue(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -180,16 +124,14 @@ async def pick_note_skip(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-async def save_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE, partial=False):
+async def save_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     data = {
         "sizo_id": ctx.user_data.get("sizo_id"),
         "user_id": user.id,
         "username": user.username or user.full_name,
         "access_type": ctx.user_data.get("access_type"),
-        "meeting_format": ctx.user_data.get("meeting_format") if not partial else None,
-        "dress_code": ctx.user_data.get("dress") if not partial else None,
-        "queue_type": ctx.user_data.get("queue_type") if not partial else None,
+        "queue_type": ctx.user_data.get("queue_type"),
         "note": ctx.user_data.get("note"),
     }
     try:
@@ -221,19 +163,14 @@ async def status_sizo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text(f"{label}: репортов пока нет.")
             return
         r = res.data[0]
-        dress_map = {"mask": "маска", "suit": "костюм", "gown": "халат", "gloves": "перчатки", "covers": "бахилы"}
-        fmt_map = {"cabinet": "кабинет", "glass": "через стекло"}
         queue_map = {"electronic": "электронная запись", "live": "живая очередь", "both": "оба варианта"}
-        dress_str = ", ".join(dress_map.get(d, d) for d in (r.get("dress_code") or []))
         from datetime import datetime, timezone
         dt = datetime.fromisoformat(r["created_at"].replace("Z", "+00:00"))
         date_str = dt.strftime("%d.%m.%Y %H:%M")
         lines = [
             f"{label}",
             f"Последний репорт: {date_str}",
-            f"Встреча: {fmt_map.get(r.get('meeting_format'), '?')}",
             f"Очередь: {queue_map.get(r.get('queue_type'), '?')}",
-            f"Одежда: {dress_str or '?'}",
         ]
         if r.get("note"):
             lines.append(f"Заметка: {r['note']}")
@@ -257,8 +194,6 @@ def main():
         states={
             PICK_SIZO: [CallbackQueryHandler(pick_sizo, pattern="^sizo_")],
             PICK_ACCESS: [CallbackQueryHandler(pick_access, pattern="^access_")],
-            PICK_FORMAT: [CallbackQueryHandler(pick_format, pattern="^fmt_")],
-            PICK_DRESS: [CallbackQueryHandler(pick_dress, pattern="^dress_")],
             PICK_QUEUE: [CallbackQueryHandler(pick_queue, pattern="^queue_")],
             PICK_NOTE: [
                 CallbackQueryHandler(pick_note_skip, pattern="^note_skip"),
